@@ -1,0 +1,17 @@
+FFmpeg in Badge Maximizer
+
+Badge Maximizer runs ffmpeg.exe (in this folder) to turn the stream video
+into H.264 video and Opus audio. FFmpeg is a separate program by the FFmpeg
+developers. It is not modified; Badge Maximizer starts it as its own process.
+
+Build:    FFmpeg 64-bit static Windows build from www.gyan.dev
+Version:  2025-09-04-git-2611874a50-full_build-www.gyan.dev
+License:  GNU General Public License, version 3 (see LICENSE in this folder)
+
+Source code
+  FFmpeg:  https://github.com/FFmpeg/FFmpeg/commit/2611874a50
+  Build:   https://www.gyan.dev/ffmpeg/builds/
+README.txt in this folder lists the build configuration and every library
+version that is compiled into ffmpeg.exe.
+
+You may copy, change and share FFmpeg under the terms of the GPL v3.

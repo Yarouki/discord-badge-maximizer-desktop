@@ -1,0 +1,11 @@
+app/resources-backend/
+app/resources-ffmpeg/ffmpeg.exe
+scripts/.nuitka-build/
+
+app/coverage/
+app/test-results/
+app/playwright-report/
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/

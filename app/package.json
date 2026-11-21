@@ -1,0 +1,39 @@
+{
+  "name": "badge-maximizer",
+  "version": "0.1.0",
+  "description": "Desktop app for Discord's Game Time, Game Variety and Streaming badges",
+  "main": "./out/main/index.js",
+  "author": "Yarouki",
+  "license": "MIT",
+  "scripts": {
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "start": "electron-vite preview",
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "postinstall": "install-electron && electron-builder install-app-deps",
+    "build:unpack": "node build/check-resources.mjs && npm run build && electron-builder --dir",
+    "build:win": "node build/check-resources.mjs && npm run build && electron-builder --win",
+    "build:mac": "npm run build && electron-builder --mac",
+    "build:linux": "npm run build && electron-builder --linux",
+    "build:backend": "pwsh -NoProfile -File ../scripts/build_backend.ps1"
+  },
+  "dependencies": {
+    "@electron-toolkit/utils": "^4.0.0"
+  },
+  "devDependencies": {
+    "@electron-toolkit/tsconfig": "^2.0.0",
+    "@fontsource-variable/anybody": "5.3.0",
+    "@fontsource-variable/onest": "5.3.1",
+    "@types/node": "^24.19.2",
+    "@types/three": "0.187.0",
+    "electron": "45.4.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^6.0.0",
+    "three": "0.187.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4"
+  },
+  "productName": "Badge Maximizer"
+}
