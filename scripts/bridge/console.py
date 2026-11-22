@@ -5,6 +5,8 @@ import time
 
 from bridge.protocol import log
 
+UDP_FAILED_TEXT = "Couldn't reach Discord's voice server over UDP, so the voice connection failed. Trying again."
+
 _CONSOLE_RULES: tuple = (
     ("code 4004", ("auth_rejected", None, None)),
     ("option 4 or 5", (None, None, None)),
@@ -31,7 +33,7 @@ _CONSOLE_RULES: tuple = (
     ("connection stalled", (None, "warning", "The voice connection stalled. Joining the channel again.")),
     ("voice websocket handshake failed", (None, "warning", "Couldn't connect to Discord's voice server. Trying again.")),
     ("stream media connection handshake failed", (None, "warning", "Couldn't connect to Discord's stream server.")),
-    ("udp discovery failed", (None, "warning", "Couldn't set up the media route, so viewers may not see the stream.")),
+    ("udp discovery failed", (None, "warning", UDP_FAILED_TEXT)),
     ("discord requires at least 1 other user", (None, None, None)),
     ("falling back to silent audio pump", (None, None, None)),
     ("ws connect failed", (None, None, None)),

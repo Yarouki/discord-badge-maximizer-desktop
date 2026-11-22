@@ -1,3 +1,5 @@
+<img src="app/build/icon.png" width="96" alt="">
+
 # Badge Maximizer for Discord, as a desktop app
 
 A Windows app for Discord's Game Time, Game Variety and Streaming profile badges. It puts an interface, saved logins and an installer around the scripts from [sonuworks/discord-badge-maximizer](https://github.com/sonuworks/discord-badge-maximizer), which do the actual work against Discord.
@@ -8,7 +10,9 @@ A Windows app for Discord's Game Time, Game Variety and Streaming profile badges
 
 ## Download
 
-Get `badge-maximizer-0.1.0-setup.exe` from the [latest release](https://github.com/Yarouki/discord-badge-maximizer-desktop/releases/latest). It runs on Windows 10 and 11 (64-bit), needs no admin rights, and brings everything with it. You don't have to install Python or FFmpeg.
+Get `badge-maximizer-0.1.1-setup.exe` from the [latest release](https://github.com/Yarouki/discord-badge-maximizer-desktop/releases/latest). It runs on Windows 10 and 11 (64-bit), needs no admin rights, and brings everything with it. You don't have to install Python or FFmpeg.
+
+![The installer's first page](docs/screenshots/installer.png)
 
 The installer isn't code-signed, so Windows shows "Windows protected your PC" the first time. Click "More info", then "Run anyway". Some antivirus programs flag the backend because it is a compiled Python program. If you'd rather not trust a download, build it yourself from this source (see below).
 
@@ -57,6 +61,7 @@ Every step the app and Discord took, newest first, with a button to copy it and 
 - The activity log is also written to a file (rotated at 1 MB) at `%APPDATA%\Badge Maximizer\logs`.
 - Only one copy of the app runs at a time, and closing it stops the backend and FFmpeg with it.
 - One installer holds the app, the compiled backend and FFmpeg. The uninstaller asks whether to delete your saved logins and totals.
+- The streaming script itself has fixes over the original. It no longer stalls on data that arrived together with the previous message, no longer reports a voice connection that sends nothing as connected, keeps its heartbeats going while a voice server is slow, and stops retrying a login session Discord has already rejected.
 
 ## Where your data is
 
@@ -85,7 +90,7 @@ The installer ends up in `app\dist`. To run the app without building an installe
 
 ## Credits
 
-- `scripts/games.py` and `scripts/stream.py` are by [Sonu Jana](https://github.com/sonuworks) and come from [discord-badge-maximizer](https://github.com/sonuworks/discord-badge-maximizer) v1.3.0. Comments are removed, the code is unchanged.
+- `scripts/games.py` and `scripts/stream.py` are by [Sonu Jana](https://github.com/sonuworks) and come from [discord-badge-maximizer](https://github.com/sonuworks/discord-badge-maximizer) v1.3.0. `games.py` is his code with the comments removed. `stream.py` also carries the connection fixes described in [issue #6](https://github.com/sonuworks/discord-badge-maximizer/issues/6) of his repo.
 - [FFmpeg](https://ffmpeg.org) is a separate program under the GPL v3. Its license and build details are in `app/resources-ffmpeg`.
 - The fonts are Anybody and Onest, both under the SIL Open Font License.
 - Built with [Electron](https://www.electronjs.org) and [three.js](https://threejs.org).

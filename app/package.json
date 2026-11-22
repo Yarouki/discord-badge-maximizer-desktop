@@ -1,6 +1,6 @@
 {
   "name": "badge-maximizer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Desktop app for Discord's Game Time, Game Variety and Streaming badges",
   "main": "./out/main/index.js",
   "author": "Yarouki",

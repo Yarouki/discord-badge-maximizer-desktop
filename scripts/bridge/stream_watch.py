@@ -93,8 +93,7 @@ def watch_connections(engine, watch: StreamWatch) -> None:
             engine.running = False
         return
     watch.gateway_down_since = None
-    if _connection_dead(engine.voice_conn):
-        engine.voice_connected = False
+    engine._clear_voice_if_dead(engine.voice_conn)
     if _connection_dead(engine.stream_conn):
         engine.stream_connected = False
     if engine.stream_connected:

@@ -328,6 +328,11 @@ class Session:
         return cls(hb, sig, b64_props, raw_props)
 
 
+MAX_WS_FRAME_BYTES = 16 * 1024 * 1024
+MAX_WS_HEADER_BYTES = 16 * 1024
+WS_CLOSE_SEND_SEC = 0.5
+
+
 class MiniWebSocket:
     def __init__(self, host: str, port: int = 443, path: str = "/") -> None:
         host_clean = host.replace("wss://", "").replace("https://", "").rstrip("/")
@@ -346,11 +351,18 @@ class MiniWebSocket:
         self.sock: ssl.SSLSocket | None = None
         self.closed = True
         self._lock = threading.RLock()
+        self._rbuf = bytearray()
+        self._abandoned = False
 
     def connect(self) -> None:
         raw_sock = socket.create_connection((self.host, self.port), timeout=15)
         ctx = ssl.create_default_context()
-        self.sock = ctx.wrap_socket(raw_sock, server_hostname=self.host)
+        sock = ctx.wrap_socket(raw_sock, server_hostname=self.host)
+        with self._lock:
+            if self._abandoned:
+                sock.close()
+                raise ConnectionError("socket closed")
+            self.sock = sock
         sec_key = base64.b64encode(os.urandom(16)).decode("ascii")
 
         host_hdr = self.host if self.port == 443 else f"{self.host}:{self.port}"
@@ -367,15 +379,21 @@ class MiniWebSocket:
 
         header_data = b""
         while b"\r\n\r\n" not in header_data:
+            if len(header_data) > MAX_WS_HEADER_BYTES:
+                raise ConnectionError("handshake response too large")
             chunk = self.sock.recv(4096)
             if not chunk:
                 raise ConnectionError("failed handshake")
             header_data += chunk
+        self._rbuf = bytearray(header_data.split(b"\r\n\r\n", 1)[1])
 
         first_line = header_data.split(b"\r\n")[0].decode("utf-8", "ignore")
         if "101" not in first_line:
             raise ConnectionError(f"handshake rejected: {first_line}")
-        self.closed = False
+        with self._lock:
+            if self._abandoned:
+                raise ConnectionError("socket closed")
+            self.closed = False
 
     def send(self, data: str) -> None:
         with self._lock:
@@ -427,7 +445,8 @@ class MiniWebSocket:
                 raise ConnectionError(f"socket write error: {e}") from e
 
     def _recv_exact(self, n: int) -> bytes:
-        buf = bytearray()
+        buf = bytearray(self._rbuf[:n])
+        del self._rbuf[:n]
         while len(buf) < n:
             chunk = self.sock.recv(n - len(buf))
             if not chunk:
@@ -439,9 +458,11 @@ class MiniWebSocket:
         if self.closed or not self.sock:
             return None
         try:
-            r, _, _ = select.select([self.sock], [], [], timeout)
-            if not r:
-                return None
+            buffered = self._rbuf or (isinstance(self.sock, ssl.SSLSocket) and self.sock.pending() > 0)
+            if not buffered:
+                r, _, _ = select.select([self.sock], [], [], timeout)
+                if not r:
+                    return None
             head = self._recv_exact(2)
         except Exception:
             self.close()
@@ -452,36 +473,40 @@ class MiniWebSocket:
             code = 0
             reason = ""
             try:
-                c_len = head[1] & 0x7F
-                if c_len >= 2:
-                    p = self._recv_exact(c_len)
+                p = self._recv_payload(head)
+                if p and len(p) >= 2:
                     code = struct.unpack(">H", p[:2])[0]
                     reason = p[2:].decode("utf-8", "ignore")
             except Exception:
                 pass
             self.close()
             return {"op": "close", "code": code, "reason": reason}
+
+        try:
+            payload = self._recv_payload(head)
+        except Exception:
+            self.close()
+            return None
+        if payload is None:
+            self._send_close_now(1009)
+            self.close()
+            return None
         if opcode == 0x9:
             try:
                 with self._lock:
                     if self.sock and not self.closed:
-                        pong = bytearray([0x8A, 0x80])
-                        pong.extend(os.urandom(4))
+                        body = payload[:125]
+                        mask_key = os.urandom(4)
+                        pong = bytearray([0x8A, 0x80 | len(body)])
+                        pong.extend(mask_key)
+                        pong.extend(b ^ mask_key[i % 4] for i, b in enumerate(body))
                         self.sock.sendall(pong)
             except Exception:
                 self.close()
             return {"op": "ping"}
-
-        length = head[1] & 0x7F
+        if opcode == 0xA:
+            return {"op": "pong"}
         try:
-            if length == 126:
-                ext = self._recv_exact(2)
-                length = int.from_bytes(ext, "big")
-            elif length == 127:
-                ext = self._recv_exact(8)
-                length = int.from_bytes(ext, "big")
-
-            payload = self._recv_exact(length)
             if opcode == 0x2:
                 return {"op": "binary", "data": payload}
             return json.loads(payload.decode("utf-8"))
@@ -489,7 +514,34 @@ class MiniWebSocket:
             self.close()
             return None
 
+    def _recv_payload(self, head: bytes) -> bytes | None:
+        length = head[1] & 0x7F
+        if length == 126:
+            length = int.from_bytes(self._recv_exact(2), "big")
+        elif length == 127:
+            length = int.from_bytes(self._recv_exact(8), "big")
+        if length > MAX_WS_FRAME_BYTES:
+            return None
+        mask_key = self._recv_exact(4) if head[1] & 0x80 else b""
+        payload = self._recv_exact(length)
+        if mask_key:
+            payload = bytes(b ^ mask_key[i % 4] for i, b in enumerate(payload))
+        return payload
+
+    def _send_close_now(self, code: int) -> None:
+        try:
+            with self._lock:
+                if not self.sock:
+                    return
+                self.sock.settimeout(WS_CLOSE_SEND_SEC)
+                mask_key = os.urandom(4)
+                body = struct.pack(">H", code)
+                self.sock.sendall(bytes([0x88, 0x82]) + mask_key + bytes(b ^ mask_key[i % 4] for i, b in enumerate(body)))
+        except Exception:
+            pass
+
     def close(self) -> None:
+        self._abandoned = True
         self.closed = True
         with self._lock:
             if self.sock:
@@ -510,6 +562,13 @@ class MediaStreamPump:
         self.a_proc: subprocess.Popen | None = None
         self.v_thread: threading.Thread | None = None
         self.a_thread: threading.Thread | None = None
+        self._stop_requested = False
+
+    def _stopped_meanwhile(self) -> bool:
+        if self._stop_requested or self.conn.closed:
+            self.stop()
+            return True
+        return False
 
     def _send_rtcp_sr(self, cipher: AESGCM, ssrc: int, rtp_ts: int, pkt_count: int, byte_count: int) -> None:
         now_wall = time.time()
@@ -572,7 +631,11 @@ class MediaStreamPump:
                 "-f", "opus", "pipe:1"
             ]
             self.v_proc = subprocess.Popen(v_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=1048576)
+            if self._stopped_meanwhile():
+                return False
             self.a_proc = subprocess.Popen(a_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=65536)
+            if self._stopped_meanwhile():
+                return False
 
             self.v_thread = threading.Thread(target=self._pump_video, daemon=True)
             self.a_thread = threading.Thread(target=self._pump_audio, daemon=True)
@@ -810,6 +873,7 @@ class MediaStreamPump:
                 break
 
     def stop(self) -> None:
+        self._stop_requested = True
         self.running = False
         if sys.platform == "win32":
             try:
@@ -821,6 +885,17 @@ class MediaStreamPump:
             try:
                 self.v_proc.terminate()
                 self.v_proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    self.v_proc.kill()
+                    self.v_proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                if self.v_proc.poll() is not None and self.v_proc.stdout:
+                    self.v_proc.stdout.close()
             except Exception:
                 pass
             self.v_proc = None
@@ -828,9 +903,24 @@ class MediaStreamPump:
             try:
                 self.a_proc.terminate()
                 self.a_proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                try:
+                    self.a_proc.kill()
+                    self.a_proc.wait(timeout=1.0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            try:
+                if self.a_proc.poll() is not None and self.a_proc.stdout:
+                    self.a_proc.stdout.close()
             except Exception:
                 pass
             self.a_proc = None
+
+
+UDP_DISCOVERY_ATTEMPTS = 3
+UDP_DISCOVERY_TIMEOUT_SEC = 2.0
 
 
 class VoiceConnection:
@@ -936,10 +1026,14 @@ class VoiceConnection:
         except Exception as exc:
             C.err(self.label, f"ws connect failed: {exc}")
             return False
+        if self._closed_meanwhile():
+            return False
 
         msg = self._recv_op(8, timeout=10)
         if not msg:
             C.err(self.label, "no Hello from voice server")
+            return False
+        if self._closed_meanwhile():
             return False
         self.heartbeat_interval = msg.get("d", {}).get("heartbeat_interval", 13750) / 1000.0
 
@@ -962,6 +1056,8 @@ class VoiceConnection:
         msg = self._recv_op(2, timeout=10)
         if not msg:
             C.err(self.label, "no Ready from voice server")
+            return False
+        if self._closed_meanwhile():
             return False
 
         d = msg.get("d", {})
@@ -991,10 +1087,13 @@ class VoiceConnection:
         if not self.encryption_mode and modes:
             self.encryption_mode = modes[0]
 
-        if not self._udp_discovery():
-            C.warn(self.label, "UDP discovery failed, using fallback IP")
-            self.external_ip = "127.0.0.1"
-            self.external_port = random.randint(10000, 60000)
+        found_route = self._udp_discovery()
+        if self._closed_meanwhile():
+            return False
+        if not found_route:
+            C.warn(self.label, "UDP discovery failed")
+            self.close()
+            return False
 
         codecs = [
             {
@@ -1038,19 +1137,29 @@ class VoiceConnection:
         }))
 
         msg = self._recv_op(4, timeout=10)
-        if msg:
-            d = msg.get("d", {})
-            self.secret_key = bytes(d.get("secret_key", []))
-            self.encryption_mode = d.get("mode", self.encryption_mode)
-            a_codec = d.get("audio_codec", "opus")
-            v_codec = d.get("video_codec", "none")
-            self.dave_protocol_version = d.get("dave_protocol_version", 0)
-            C.ok(self.label, f"media route ready (audio={a_codec}, video={v_codec}, mode={self.encryption_mode})")
-            if HAS_DAVE:
-                self._init_dave()
+        if not msg:
+            C.err(self.label, "no Session Description from voice server")
+            self.close()
+            return False
+        d = msg.get("d", {})
+        self.secret_key = bytes(d.get("secret_key", []))
+        self.encryption_mode = d.get("mode", self.encryption_mode)
+        a_codec = d.get("audio_codec", "opus")
+        v_codec = d.get("video_codec", "none")
+        self.dave_protocol_version = d.get("dave_protocol_version", 0)
+        C.ok(self.label, f"media route ready (audio={a_codec}, video={v_codec}, mode={self.encryption_mode})")
+        if HAS_DAVE:
+            self._init_dave()
+        if self._closed_meanwhile():
+            return False
 
         self.running = True
         return True
+
+    def _closed_meanwhile(self) -> bool:
+        if self.closed:
+            self.close()
+        return self.closed
 
     def _recv_op(self, target_op: int, timeout: float = 10) -> dict | None:
         deadline = time.time() + timeout
@@ -1089,11 +1198,17 @@ class VoiceConnection:
                     self.udp_sock.ioctl(0x9800000C, False)
                 except Exception:
                     pass
-            self.udp_sock.settimeout(5)
+            self.udp_sock.settimeout(UDP_DISCOVERY_TIMEOUT_SEC)
             packet = bytearray(74)
             struct.pack_into(">HHI", packet, 0, 0x0001, 70, self.ssrc)
-            self.udp_sock.sendto(bytes(packet), (self.voice_ip, self.voice_port))
-            data, _ = self.udp_sock.recvfrom(256)
+            data = b""
+            for _ in range(UDP_DISCOVERY_ATTEMPTS):
+                self.udp_sock.sendto(bytes(packet), (self.voice_ip, self.voice_port))
+                try:
+                    data, _ = self.udp_sock.recvfrom(256)
+                    break
+                except socket.timeout:
+                    continue
             if len(data) < 74:
                 return False
             ip_start = 8
@@ -1621,6 +1736,9 @@ class ViewerEngine:
                 pass
 
 
+MAX_VOICE_RETRIES = 3
+
+
 class GatewayStreamEngine:
     def __init__(self, state: State, session: Session, console: Console) -> None:
         self.state = state
@@ -1652,6 +1770,8 @@ class GatewayStreamEngine:
         self._user_left_vc = False
         self._was_already_in_vc = False
         self._rejoining_voice = False
+        self._voice_lock = threading.Lock()
+        self._voice_failures = 0
         self.viewer_engine: ViewerEngine | None = None
 
         self._status_thread: threading.Thread | None = None
@@ -1856,24 +1976,33 @@ class GatewayStreamEngine:
 
         self._cleanup(self.guild_id)
 
+    def _clear_voice_if_dead(self, conn: "VoiceConnection | None") -> None:
+        with self._voice_lock:
+            if conn is None or self.voice_conn is not conn:
+                return
+            if getattr(conn, "closed", False) or not conn.running or not conn.ws or conn.ws.closed:
+                self.voice_connected = False
+
     def _force_rejoin_voice(self) -> None:
         if not self.running or not self.ws or self.ws.closed or not self.channel_id:
             return
         self._rejoining_voice = True
         self.stream_connected = False
-        self.voice_connected = False
         if self.stream_conn:
             try:
                 self.stream_conn.close()
             except Exception:
                 pass
             self.stream_conn = None
-        if self.voice_conn:
+        with self._voice_lock:
+            self.voice_connected = False
+            old_voice = self.voice_conn
+            self.voice_conn = None
+        if old_voice:
             try:
-                self.voice_conn.close()
+                old_voice.close()
             except Exception:
                 pass
-            self.voice_conn = None
         try:
             self.ws.send(json.dumps({
                 "op": 4,
@@ -1959,7 +2088,6 @@ class GatewayStreamEngine:
             return False
 
         self.stream_connected = False
-        self.voice_connected = False
 
         if self.stream_conn:
             try:
@@ -1968,12 +2096,15 @@ class GatewayStreamEngine:
                 pass
             self.stream_conn = None
 
-        if self.voice_conn:
+        with self._voice_lock:
+            self.voice_connected = False
+            old_voice = self.voice_conn
+            self.voice_conn = None
+        if old_voice:
             try:
-                self.voice_conn.close()
+                old_voice.close()
             except Exception:
                 pass
-            self.voice_conn = None
 
         if self.ws:
             try:
@@ -2007,6 +2138,10 @@ class GatewayStreamEngine:
                             C.err("auth", "please use Option 4 or 5 in the menu to update your token.")
                             self.running = False
                             return False
+                        if code in (4010, 4011, 4012, 4013, 4014):
+                            C.err("gateway", f"fatal gateway error (code {code}: {reason}), stopping.")
+                            self.running = False
+                            return False
                     if m and m.get("op") == 10:
                         hello_msg = m
                         break
@@ -2018,6 +2153,10 @@ class GatewayStreamEngine:
                     self.ws = None
                     backoff = min(15, backoff + 2)
                     continue
+
+                if not self.running:
+                    self.ws.close()
+                    return False
 
                 d_hello = hello_msg.get("d", {})
                 self.heartbeat_interval = d_hello.get("heartbeat_interval", 41250) / 1000.0
@@ -2040,13 +2179,25 @@ class GatewayStreamEngine:
                         for _ in range(30):
                             res_msg = self.ws.recv(timeout=1.0)
                             if isinstance(res_msg, dict):
+                                if res_msg.get("s") is not None:
+                                    self.sequence = res_msg.get("s")
                                 if res_msg.get("op") == "close":
                                     code = res_msg.get("code")
+                                    reason = res_msg.get("reason", "")
                                     if code == 4004:
                                         C.err("auth", "fatal gateway authentication failure (code 4004: invalid token)")
                                         C.err("auth", "please use Option 4 or 5 in the menu to update your token.")
                                         self.running = False
                                         return False
+                                    if code in (4010, 4011, 4012, 4013, 4014):
+                                        C.err("gateway", f"fatal gateway error (code {code}: {reason}), stopping.")
+                                        self.running = False
+                                        return False
+                                    if code in (4007, 4009):
+                                        C.warn("gateway", f"resume failed (code {code}), falling back to identify")
+                                        self.gateway_session_id = ""
+                                        self.sequence = None
+                                    break
                                 op_res = res_msg.get("op")
                                 t_res = res_msg.get("t")
                                 if op_res == 0 and t_res == "RESUMED":
@@ -2055,6 +2206,8 @@ class GatewayStreamEngine:
                                     break
                                 elif op_res == 9:
                                     C.warn("gateway", "resume failed (invalid session), falling back to identify")
+                                    self.gateway_session_id = ""
+                                    self.sequence = None
                                     time.sleep(1.0)
                                     break
                                 elif op_res == 0 and t_res == "READY":
@@ -2065,7 +2218,19 @@ class GatewayStreamEngine:
                     except Exception:
                         resumed = False
 
+                    if not resumed:
+                        if self.gateway_session_id and not self.ws.closed:
+                            self.gateway_session_id = ""
+                            self.sequence = None
+                        self.ws.close()
+                        self.ws = None
+                        backoff = min(15, backoff + 2)
+                        continue
+
                 if not resumed:
+                    if not self.running:
+                        self.ws.close()
+                        return False
                     C.info("sending identify (op 2)...")
                     self.ws.send(json.dumps({
                         "op": 2,
@@ -2085,11 +2250,18 @@ class GatewayStreamEngine:
                     for _ in range(30):
                         test_msg = self.ws.recv(timeout=1.0)
                         if isinstance(test_msg, dict):
+                            if test_msg.get("s") is not None:
+                                self.sequence = test_msg.get("s")
                             if test_msg.get("op") == "close":
                                 code = test_msg.get("code")
+                                reason = test_msg.get("reason", "")
                                 if code == 4004:
                                     C.err("auth", "fatal gateway authentication failure (code 4004: invalid token)")
                                     C.err("auth", "please use Option 4 or 5 in the menu to update your token.")
+                                    self.running = False
+                                    return False
+                                if code in (4010, 4011, 4012, 4013, 4014):
+                                    C.err("gateway", f"fatal gateway error (code {code}: {reason}), stopping.")
                                     self.running = False
                                     return False
                             elif test_msg.get("op") == 0 and test_msg.get("t") == "READY":
@@ -2105,6 +2277,10 @@ class GatewayStreamEngine:
                         self.ws = None
                     backoff = min(15, backoff + 2)
                     continue
+
+                if not self.running:
+                    self.ws.close()
+                    return False
 
                 if self.channel_id:
                     self._force_rejoin_voice()
@@ -2318,6 +2494,8 @@ class GatewayStreamEngine:
                                 C.warn("viewer", "⚠️  all viewers left voice channel (0 present) — stream hour accumulation PAUSED!")
 
         elif event_type == "VOICE_SERVER_UPDATE":
+            if not self.running:
+                return
             self._rejoining_voice = False
             token = d.get("token", "")
             endpoint = d.get("endpoint") or ""
@@ -2329,16 +2507,13 @@ class GatewayStreamEngine:
 
             if self.voice_connected:
                 C.warn("voice", "voice server update received, re-establishing voice connection...")
-                if self.voice_conn:
-                    self.voice_conn.close()
-                self.voice_connected = False
 
             self.voice_token = token
             self.voice_endpoint = endpoint
             C.ok("voice", f"voice server: {endpoint}")
 
             session_id = self.voice_session_id or self.gateway_session_id
-            self.voice_conn = VoiceConnection(
+            v_conn = VoiceConnection(
                 endpoint=self.voice_endpoint,
                 server_id=v_guild,
                 user_id=self.user_id,
@@ -2349,36 +2524,66 @@ class GatewayStreamEngine:
                 is_stream=False,
                 channel_id=self.channel_id,
             )
+            with self._voice_lock:
+                old_voice = self.voice_conn
+                self.voice_conn = v_conn
+                self.voice_connected = False
+            if old_voice:
+                old_voice.close()
 
-            C.info("performing voice WebSocket handshake...")
-            if self.voice_conn.connect():
-                self.voice_conn.start_heartbeat()
-                self.voice_conn.send_speaking(False)
-                self.voice_conn.start_silence_pump()
-                self.voice_connected = True
-                C.ok("voice", f"{C.GREEN}voice connection established (ssrc={self.voice_conn.ssrc}){C.RESET}")
-
-                time.sleep(0.5)
-                C.info("requesting Go Live stream (op 18 Stream Create)...")
+            def _connect_voice():
+                if not self.running:
+                    return
+                C.info("performing voice WebSocket handshake...")
                 try:
-                    self.ws.send(json.dumps({
-                        "op": 18,
-                        "d": {
-                            "type": "guild",
-                            "guild_id": self.guild_id,
-                            "channel_id": self.channel_id,
-                            "preferred_region": None,
-                        },
-                    }))
-                except Exception as exc:
-                    C.warn("stream", f"stream create send error: {exc}")
-            else:
-                C.err("voice", "voice WebSocket handshake FAILED, requesting fresh voice session in 2s...")
-                def _retry_voice():
+                    connected = v_conn.connect()
+                except Exception:
+                    connected = False
+                if connected:
+                    with self._voice_lock:
+                        current = self.running and self.voice_conn is v_conn
+                        if current:
+                            self.voice_connected = True
+                            self._voice_failures = 0
+                    if not current:
+                        v_conn.close()
+                        return
+                    v_conn.start_heartbeat()
+                    v_conn.send_speaking(False)
+                    v_conn.start_silence_pump()
+                    C.ok("voice", f"{C.GREEN}voice connection established (ssrc={v_conn.ssrc}){C.RESET}")
+
+                    time.sleep(0.5)
+                    if not self.running or self.voice_conn is not v_conn:
+                        return
+                    C.info("requesting Go Live stream (op 18 Stream Create)...")
+                    try:
+                        self.ws.send(json.dumps({
+                            "op": 18,
+                            "d": {
+                                "type": "guild",
+                                "guild_id": self.guild_id,
+                                "channel_id": self.channel_id,
+                                "preferred_region": None,
+                            },
+                        }))
+                    except Exception as exc:
+                        C.warn("stream", f"stream create send error: {exc}")
+                else:
+                    v_conn.close()
+                    if not self.running or self.voice_conn is not v_conn:
+                        return
+                    self._voice_failures += 1
+                    if self._voice_failures > MAX_VOICE_RETRIES:
+                        if self._voice_failures == MAX_VOICE_RETRIES + 1:
+                            C.warn("voice", f"couldn't connect to the voice server {self._voice_failures} times in a row, "
+                                            "so it stops retrying. Check that your network allows UDP traffic")
+                        return
+                    C.err("voice", "voice WebSocket handshake FAILED, requesting fresh voice session in 2s...")
                     time.sleep(2.0)
-                    if self.running and not self.voice_connected:
+                    if self.running and not self.voice_connected and self.voice_conn is v_conn:
                         self._force_rejoin_voice()
-                threading.Thread(target=_retry_voice, daemon=True).start()
+            threading.Thread(target=_connect_voice, daemon=True).start()
 
         elif event_type == "STREAM_CREATE":
             self.stream_key = d.get("stream_key", "")
@@ -2450,7 +2655,7 @@ class GatewayStreamEngine:
                     self.stream_conn = None
                 target_server = self.rtc_server_id or d.get("rtc_server_id") or d.get("guild_id") or self.guild_id or self.channel_id
                 v_session = self.voice_session_id or self.gateway_session_id
-                self.stream_conn = VoiceConnection(
+                conn = VoiceConnection(
                     endpoint=endpoint,
                     server_id=target_server,
                     user_id=self.user_id,
@@ -2462,18 +2667,26 @@ class GatewayStreamEngine:
                     stream_key=s_key,
                     channel_id=self.channel_id,
                 )
+                self.stream_conn = conn
                 def _connect_stream():
-                    if not self.stream_conn:
+                    if self.stream_conn is not conn:
                         return
-                    if self.stream_conn.connect():
-                        self.stream_conn.start_heartbeat()
+                    try:
+                        connected = conn.connect()
+                    except Exception:
+                        connected = False
+                    if connected:
+                        if not self.running or self.stream_conn is not conn:
+                            conn.close()
+                            return
+                        conn.start_heartbeat()
                         try:
-                            v_ssrc = self.stream_conn.video_ssrc
-                            r_ssrc = self.stream_conn.rtx_ssrc
+                            v_ssrc = conn.video_ssrc
+                            r_ssrc = conn.rtx_ssrc
                             stream_desc = {
                                 "op": 12,
                                 "d": {
-                                    "audio_ssrc": self.stream_conn.ssrc,
+                                    "audio_ssrc": conn.ssrc,
                                     "video_ssrc": v_ssrc,
                                     "rtx_ssrc": r_ssrc,
                                     "streams": [
@@ -2491,11 +2704,11 @@ class GatewayStreamEngine:
                                     ],
                                 },
                             }
-                            self.stream_conn.ws.send(json.dumps(stream_desc))
-                            self.stream_conn.send_speaking(True)
+                            conn.ws.send(json.dumps(stream_desc))
+                            conn.send_speaking(True)
                         except Exception:
                             pass
-                        C.ok("stream_rtc", f"stream media connection active (ssrc={self.stream_conn.ssrc})")
+                        C.ok("stream_rtc", f"stream media connection active (ssrc={conn.ssrc})")
                         video_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "video.mp4")
                         if not os.path.exists(video_file):
                             video_file = os.path.join("assets", "video.mp4")
@@ -2504,19 +2717,21 @@ class GatewayStreamEngine:
                         if not os.path.exists(video_file):
                             video_file = os.path.join("assets", "hero_arena.mp4")
                         if os.path.exists(video_file):
-                            if not self.stream_conn.start_media_stream(video_file):
+                            if not conn.start_media_stream(video_file):
                                 C.warn("stream_rtc", "falling back to silent audio pump")
-                                self.stream_conn.start_silence_pump()
+                                conn.start_silence_pump()
                         else:
-                            self.stream_conn.start_silence_pump()
+                            conn.start_silence_pump()
+                        if not self.running or self.stream_conn is not conn:
+                            conn.close()
                     else:
-                        C.warn("stream_rtc", "stream media connection handshake failed")
+                        conn.close()
+                        if self.running and self.stream_conn is conn:
+                            C.warn("stream_rtc", "stream media connection handshake failed")
                 threading.Thread(target=_connect_stream, daemon=True).start()
 
         elif event_type == "STREAM_DELETE":
             self.stream_connected = False
-            if self.voice_conn and self.voice_conn._media_pump:
-                self.voice_conn._media_pump.stop()
             if self.stream_conn:
                 self.stream_conn.close()
                 self.stream_conn = None

@@ -88,7 +88,7 @@ STREAM_NAMES = (
     "VoiceConnection.start_media_stream", "VoiceConnection.stop_media_stream", "VoiceConnection.start_silence_pump",
     "ViewerEngine.start", "ViewerEngine.stop", "ViewerEngine.watch",
     "GatewayStreamEngine._event_loop", "GatewayStreamEngine._cleanup", "GatewayStreamEngine.get_viewer_count",
-    "GatewayStreamEngine._force_rejoin_voice",
+    "GatewayStreamEngine._force_rejoin_voice", "GatewayStreamEngine._clear_voice_if_dead",
 )
 ENGINE_ATTRIBUTES = (
     "state", "ws", "running", "start_time", "counted_stream_seconds", "user_id", "stream_ever_active",
