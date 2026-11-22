@@ -27,6 +27,7 @@ export type AccountBridge = Pick<
   | 'legacyClear'
   | 'logout'
   | 'isRunning'
+  | 'backendId'
 >
 type Store = Pick<AccountStore, 'get' | 'update' | 'loadProblem' | 'deleteBadCopies'>
 type OpenLogin = (role: AccountRole) => Promise<DiscordLoginResult>
@@ -35,6 +36,14 @@ type Identify = (token: string) => Promise<DiscordIdentity>
 interface Extra {
   login?: LoginResult
   alt?: AltState
+}
+
+interface AppliedSession {
+  backend: number
+  mainId: string
+  altId: string | null
+  login: LoginResult
+  alt: AltState
 }
 
 const text = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
@@ -65,14 +74,20 @@ class Warnings {
 export class AccountManager {
   private queue: Promise<unknown> = Promise.resolve()
   private loadProblemTold = false
+  private applied: AppliedSession | null = null
 
   constructor(
     private readonly store: Store,
     private readonly bridge: AccountBridge,
     private readonly openLogin: OpenLogin,
     private readonly identify: Identify,
-    private readonly warn: (message: string) => void = (m) => console.warn(m)
+    private readonly warn: (message: string) => void = (m) => console.warn(m),
+    private readonly streaming: () => boolean = () => false
   ) {}
+
+  forgetAppliedAlt(): void {
+    if (this.applied) this.applied = { ...this.applied, alt: null }
+  }
 
   private serial(work: (warnings: Warnings) => Promise<AccountResult>): Promise<AccountResult> {
     const warnings = new Warnings()
@@ -131,6 +146,26 @@ export class AccountManager {
     return { id: who.id, saved }
   }
 
+  private remember(login: LoginResult | undefined, alt: AltState | undefined): void {
+    const backend = this.bridge.backendId()
+    const previous = this.applied?.backend === backend ? this.applied : null
+    const { mainId, altId } = this.store.get()
+    const keptLogin = login ?? previous?.login
+    const keptAlt = alt !== undefined ? alt : previous?.alt
+    if (backend === null || !mainId || !keptLogin?.ok || keptAlt === undefined) {
+      this.applied = null
+      return
+    }
+    this.applied = { backend, mainId, altId, login: keptLogin, alt: keptAlt }
+  }
+
+  private keptSession(): AppliedSession | null {
+    const session = this.applied
+    if (!session || session.backend !== this.bridge.backendId()) return null
+    const { mainId, altId } = this.store.get()
+    return session.mainId === mainId && session.altId === altId ? session : null
+  }
+
   private async applyMain(): Promise<LoginResult> {
     const main = findAccount(this.store.get(), this.store.get().mainId)
     if (!main) return { ok: false, error: 'No main account is saved.' }
@@ -165,6 +200,7 @@ export class AccountManager {
     if (mainChanged) {
       const login = await this.applyMain()
       if (!login.ok) {
+        this.applied = null
         this.apply(() => before, warnings)
         if (login.unanswered) await this.resyncMain()
         return this.fail(login.error || "Couldn't log in with that account.", warnings, { login })
@@ -175,9 +211,11 @@ export class AccountManager {
       try {
         extra.alt = await this.applyAlt()
       } catch (e) {
+        if (mainChanged) this.applied = null
         return this.altFailed(errorMessage(e), before.altId, warnings, extra)
       }
     }
+    this.remember(extra.login, extra.alt)
     return this.ok(warnings, extra)
   }
 
@@ -211,6 +249,7 @@ export class AccountManager {
       await this.importLegacy(warnings)
       const state = this.store.get()
       if (!state.mainId) {
+        this.applied = null
         const warning = warnings.text
         return {
           ok: false,
@@ -219,19 +258,34 @@ export class AccountManager {
           accounts: this.view()
         }
       }
+      const kept = this.keptSession()
+      if (kept) return this.ok(warnings, { login: kept.login, alt: kept.alt })
+      this.applied = null
       const login = await this.applyMain()
       if (!login.ok) return this.fail(login.error || "Couldn't log back in.", warnings)
-      if (!state.altId) return this.ok(warnings, { login, alt: null })
-      try {
-        return this.ok(warnings, { login, alt: await this.applyAlt() })
-      } catch (e) {
-        this.apply(clearAlt, warnings)
-        warnings.add(
-          `Couldn't reconnect the alt: ${errorMessage(e)} Pick it again under Alt viewer to try once more.`
-        )
-        return this.ok(warnings, { login, alt: null })
-      }
+      const alt = state.altId ? await this.restoreAlt(warnings) : null
+      this.remember(login, alt)
+      return this.ok(warnings, { login, alt })
     })
+  }
+
+  private async restoreAlt(warnings: Warnings): Promise<AltState> {
+    if (this.streaming()) {
+      const alt = findAccount(this.store.get(), this.store.get().altId)
+      warnings.add(
+        'The alt account was not connected again while your stream runs. Pick it again under Alt viewer after the stream ends if it does not watch.'
+      )
+      return alt ? { username: alt.displayName } : null
+    }
+    try {
+      return await this.applyAlt()
+    } catch (e) {
+      this.apply(clearAlt, warnings)
+      warnings.add(
+        `Couldn't reconnect the alt: ${errorMessage(e)} Pick it again under Alt viewer to try once more.`
+      )
+      return null
+    }
   }
 
   private async importLegacy(warnings: Warnings): Promise<void> {
@@ -339,6 +393,7 @@ export class AccountManager {
       const res = await this.dropBackendAlt()
       if (!res.ok) return this.fail(res.error || "Couldn't disconnect the alt.", warnings)
       this.apply(clearAlt, warnings)
+      this.remember(undefined, null)
       return this.ok(warnings, { alt: null })
     })
   }
@@ -359,6 +414,7 @@ export class AccountManager {
     if (id === mainId) {
       const res = await this.logoutBackend()
       if (!res.ok) return this.fail(res.error || "Couldn't log out.", warnings)
+      this.applied = null
       this.apply((s) => clearAlt(removeAccount(s, id)), warnings)
       this.store.deleteBadCopies()
       return this.ok(warnings, { alt: null })
@@ -369,6 +425,7 @@ export class AccountManager {
     }
     this.apply((s) => removeAccount(s, id), warnings)
     this.store.deleteBadCopies()
+    if (id === altId) this.remember(undefined, null)
     return this.ok(warnings, id === altId ? { alt: null } : {})
   }
 }

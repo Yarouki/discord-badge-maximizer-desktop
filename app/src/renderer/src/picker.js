@@ -240,6 +240,7 @@ export function createPicker(root, { kind, onChange }) {
     setItems(next, remembered) {
       items = next.filter((i) => i && typeof i.id === 'string' && typeof i.name === 'string')
       value = pickInitial(items, remembered)
+      if (value) btn.setAttribute('aria-invalid', 'false')
       close(false)
       renderFace()
       syncDisabled()

@@ -33,6 +33,8 @@ export interface EventPayloads {
   'bridge:viewers': { count: number; counted?: number; run: number }
   'bridge:alt-status': { status: AltStatus; run?: number; error?: string; dropped?: boolean }
   'bridge:backend-restart': { reason: string; final: boolean }
+  'app:hide-waiting': Record<string, never>
+  'app:stream-accepted': { run: number }
 }
 
 export type EventChannel = keyof EventPayloads
@@ -100,6 +102,72 @@ export interface VoiceChannel {
   name: string
 }
 
+export type LogTone = '' | 'gold' | 'pink'
+
+export interface LogEntry {
+  at: number
+  text: string
+  tone: LogTone
+}
+
+export interface StreamSnapshot {
+  status: 'connecting' | 'live'
+  mode: StreamMode
+  run: number
+  step: number
+  accepted: boolean
+  restarting: boolean
+  startedAt: number | null
+  viewers: number
+  countedSeconds: number
+  altStatus: AltStatus
+  serverId: string
+  channelId: string
+  serverName: string
+  channelName: string
+  previous?: StreamSnapshot
+}
+
+export interface ClaimSnapshot {
+  run: number
+  games: number
+  hours: number
+  all: boolean
+  batch: number
+  total: number
+  processed: number
+  target: number
+  failed: number
+  game: string
+  startedAt: number
+  accepted: boolean
+  previous?: ClaimSnapshot
+}
+
+export interface ClaimDoneSnapshot {
+  run: number
+  games: number
+  hours: number
+  hoursEach: number
+  batches: number
+  failed: number
+  failedGames: number
+}
+
+export interface SessionSnapshot {
+  accounts: { main: string | null; alt: string | null }
+  stream: StreamSnapshot | null
+  claim: ClaimSnapshot | null
+  claimDone: ClaimDoneSnapshot | null
+  autoWatch: boolean
+  lastRun: number
+  log: LogEntry[]
+}
+
+export type TraySnapshot = Omit<SessionSnapshot, 'log'>
+
+export type Clocked<T> = T & { now: number }
+
 export type RunResult = Result<{ run: number }>
 export type OkResult = Result
 export type BadgesResult = Result<
@@ -130,13 +198,16 @@ export interface BridgeAPI {
   startClaim(opts: ClaimArgs): Promise<RunResult>
   stopClaim(run: number): Promise<OkResult>
   startStream(opts: StreamArgs): Promise<RunResult>
-  stopStream(run?: number): Promise<OkResult>
+  stopStream(run?: number, restart?: boolean): Promise<OkResult>
   badges(): Promise<BadgesResult>
   voiceServers(): Promise<VoiceServersResult>
   voiceChannels(guildId: string): Promise<VoiceChannelsResult>
   setAutoWatch(enabled: boolean): Promise<AutoWatchResult>
   openLogFolder(): Promise<OkResult>
   retryBackend(): Promise<OkResult>
+  sessionSnapshot(): Promise<Clocked<SessionSnapshot>>
+  dismissClaim(): Promise<OkResult>
+  noteLog(text: string, tone: LogTone): Promise<OkResult>
 
   onLog: Listener<'bridge:log'>
   onClaimProgress: Listener<'bridge:claim-progress'>
@@ -147,4 +218,14 @@ export interface BridgeAPI {
   onViewers: Listener<'bridge:viewers'>
   onAltStatus: Listener<'bridge:alt-status'>
   onBackendRestart: Listener<'bridge:backend-restart'>
+  onHideWaiting: Listener<'app:hide-waiting'>
+  onStreamAccepted: Listener<'app:stream-accepted'>
+}
+
+export interface TrayAPI {
+  snapshot(): Promise<Clocked<TraySnapshot>>
+  onSnapshot(cb: (snapshot: Clocked<TraySnapshot>) => void): () => void
+  fit(height: number): Promise<OkResult>
+  openApp(): Promise<OkResult>
+  quit(): Promise<OkResult>
 }

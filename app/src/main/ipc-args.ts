@@ -1,4 +1,4 @@
-import type { AccountRole, ClaimArgs, StreamArgs } from '../shared/ipc'
+import type { AccountRole, ClaimArgs, LogTone, StreamArgs } from '../shared/ipc'
 
 export type { ClaimArgs, StreamArgs }
 
@@ -54,6 +54,41 @@ export function parseClaimArgs(value: unknown): ClaimArgs {
     all: v.all === true,
     run: parseRun(v.run)
   }
+}
+
+export const MAX_LOG_NOTE = 2000
+const LOG_TONES: readonly LogTone[] = ['', 'gold', 'pink']
+
+const MAX_LOG_NOTE_INPUT = 64 * 1024
+
+export function parseLogNote(
+  text: unknown,
+  tone: unknown,
+  redact: (text: string) => string = (t) => t
+): { text: string; tone: LogTone } {
+  if (typeof text !== 'string' || !text) throw new Error('A log line must be text.')
+  if (typeof tone !== 'string' || !LOG_TONES.includes(tone as LogTone)) {
+    throw new Error('The log line tone is not known.')
+  }
+  return {
+    text: redact(text.slice(0, MAX_LOG_NOTE_INPUT)).slice(0, MAX_LOG_NOTE),
+    tone: tone as LogTone
+  }
+}
+
+export const MIN_PANEL_HEIGHT = 80
+export const MAX_PANEL_HEIGHT = 900
+
+export function parsePanelHeight(value: unknown): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isFinite(value) ||
+    value < MIN_PANEL_HEIGHT ||
+    value > MAX_PANEL_HEIGHT
+  ) {
+    throw new Error('The panel height is out of range.')
+  }
+  return Math.ceil(value)
 }
 
 export function parseStreamArgs(value: unknown): StreamArgs {

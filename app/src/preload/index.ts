@@ -26,13 +26,16 @@ const api: BridgeAPI = {
   startClaim: (opts) => ipcRenderer.invoke('bridge:start-claim', opts),
   stopClaim: (run) => ipcRenderer.invoke('bridge:stop-claim', run),
   startStream: (opts) => ipcRenderer.invoke('bridge:start-stream', opts),
-  stopStream: (run) => ipcRenderer.invoke('bridge:stop-stream', run),
+  stopStream: (run, restart) => ipcRenderer.invoke('bridge:stop-stream', run, restart),
   badges: () => ipcRenderer.invoke('bridge:badges'),
   voiceServers: () => ipcRenderer.invoke('bridge:voice-servers'),
   voiceChannels: (guildId) => ipcRenderer.invoke('bridge:voice-channels', guildId),
   setAutoWatch: (enabled) => ipcRenderer.invoke('bridge:set-auto-watch', enabled),
   openLogFolder: () => ipcRenderer.invoke('app:open-log-folder'),
   retryBackend: () => ipcRenderer.invoke('app:retry-backend'),
+  sessionSnapshot: () => ipcRenderer.invoke('session:snapshot'),
+  dismissClaim: () => ipcRenderer.invoke('session:claim-dismiss'),
+  noteLog: (text, tone) => ipcRenderer.invoke('session:log', text, tone),
 
   onLog: makeListener('bridge:log'),
   onClaimProgress: makeListener('bridge:claim-progress'),
@@ -42,7 +45,9 @@ const api: BridgeAPI = {
   onStreamEnded: makeListener('bridge:stream-ended'),
   onViewers: makeListener('bridge:viewers'),
   onAltStatus: makeListener('bridge:alt-status'),
-  onBackendRestart: makeListener('bridge:backend-restart')
+  onBackendRestart: makeListener('bridge:backend-restart'),
+  onHideWaiting: makeListener('app:hide-waiting'),
+  onStreamAccepted: makeListener('app:stream-accepted')
 }
 
 if (process.contextIsolated) {

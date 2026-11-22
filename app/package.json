@@ -1,6 +1,6 @@
 {
   "name": "badge-maximizer",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Desktop app for Discord's Game Time, Game Variety and Streaming badges",
   "main": "./out/main/index.js",
   "author": "Yarouki",
@@ -11,7 +11,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && electron-vite build && node build/check-no-seam.mjs",
     "postinstall": "install-electron && electron-builder install-app-deps",
     "build:unpack": "node build/check-resources.mjs && npm run build && electron-builder --dir",
     "build:win": "node build/check-resources.mjs && npm run build && electron-builder --win",

@@ -91,3 +91,44 @@ export function focusExistingWindow(win: FocusableWindow | null): boolean {
   win.focus()
   return true
 }
+
+export function quitsWhenAllClosed(inTray: boolean): boolean {
+  return !inTray
+}
+
+export interface TrayAsk {
+  wanted: { stream: boolean; claim: boolean }
+}
+
+export function pendingTrayOutcome(
+  ask: TrayAsk,
+  now: { settled: boolean; stream: boolean; claim: boolean },
+  force: boolean
+): 'wait' | 'tray' | 'stay' {
+  if (!force && !now.settled) return 'wait'
+  const failed = (ask.wanted.stream && !now.stream) || (ask.wanted.claim && !now.claim)
+  return failed ? 'stay' : 'tray'
+}
+
+export const CRASH_LIMIT = 3
+export const CRASH_WINDOW_MS = 60_000
+
+export function afterPageCrash(
+  earlier: readonly number[],
+  now: number
+): { times: number[]; action: 'rebuild' | 'give-up' } {
+  const times = [...earlier.filter((t) => now - t < CRASH_WINDOW_MS), now]
+  return { times, action: times.length >= CRASH_LIMIT ? 'give-up' : 'rebuild' }
+}
+
+export const PANEL_REOPEN_GAP_MS = 400
+
+export function panelClickAction(facts: {
+  open: boolean
+  closedAt: number
+  now: number
+}): 'open' | 'close' | 'none' {
+  if (facts.open) return 'close'
+  if (facts.closedAt > 0 && facts.now - facts.closedAt < PANEL_REOPEN_GAP_MS) return 'none'
+  return 'open'
+}

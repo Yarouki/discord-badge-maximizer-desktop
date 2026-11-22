@@ -57,6 +57,7 @@ interface Pending {
 interface RunningBackend {
   proc: ChildProcess
   startedAt: number
+  id: number
 }
 
 export const EVENT_CHANNELS: Record<string, EventChannel> = {
@@ -136,6 +137,7 @@ export const DETAIL_PREFIX = 'detail: '
 
 export class PythonBridge {
   private running: RunningBackend | null = null
+  private started = 0
   private pending = new Map<string, Pending>()
   private nextId = 1
   private shuttingDown = false
@@ -240,7 +242,8 @@ export class PythonBridge {
   }
 
   private watch(proc: ChildProcess): void {
-    const backend: RunningBackend = { proc, startedAt: Date.now() }
+    this.started++
+    const backend: RunningBackend = { proc, startedAt: Date.now(), id: this.started }
     this.running = backend
 
     createInterface({ input: proc.stdout! }).on('line', (line) => this.handleLine(line))
@@ -397,6 +400,10 @@ export class PythonBridge {
 
   isRunning(): boolean {
     return this.running !== null
+  }
+
+  backendId(): number | null {
+    return this.running ? this.running.id : null
   }
 
   validateCredentials(token: string, cookie: string): Promise<LoginResult> {

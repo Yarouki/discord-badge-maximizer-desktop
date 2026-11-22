@@ -17,6 +17,8 @@ files:
   - '!playwright-report/**'
   - '!{playwright.config.mjs,vitest.config.mts,.editorconfig}'
 extraResources:
+  - from: 'build/icon.ico'
+    to: 'icon.ico'
   - from: '../scripts'
     to: 'scripts'
     filter:

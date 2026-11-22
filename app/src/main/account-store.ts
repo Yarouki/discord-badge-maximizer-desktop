@@ -74,7 +74,7 @@ function describeWriteError(e: unknown): string {
   }
 }
 
-function writeDurably(path: string, body: string): void {
+export function writeDurably(path: string, body: string): void {
   const fd = openSync(path, 'w')
   try {
     writeSync(fd, body, null, 'utf8')

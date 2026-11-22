@@ -1,3 +1,7 @@
+export function isInstalledApp(isPackaged: boolean, codeDir: string): boolean {
+  return isPackaged || /[\\/]app\.asar(?:[\\/]|$)/i.test(codeDir)
+}
+
 export const EXPOSING_SWITCHES: readonly string[] = [
   'remote-debugging-port',
   'remote-debugging-pipe',

@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Badge Maximizer</title>
+    <link rel="icon" href="data:," />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
+    />
+    <style>
+      :root {
+        forced-color-adjust: none;
+        color-scheme: dark;
+        --night: #15162b;
+        --field: #0f1026;
+        --line: rgba(181, 186, 193, 0.16);
+        --line-strong: rgba(181, 186, 193, 0.32);
+        --blurple: #5865f2;
+        --fuchsia: #eb459e;
+        --gold: #ffc34b;
+        --text: #f2f3f5;
+        --muted: #b5bac1;
+        --red-text: #ff8486;
+        --body: 'Onest', 'Segoe UI', system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        background: transparent;
+        overflow: hidden;
+      }
+      body {
+        color: var(--text);
+        font-family: var(--body);
+        font-size: 14px;
+        line-height: 1.45;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+      }
+      button {
+        font: inherit;
+        color: inherit;
+      }
+      :focus-visible {
+        outline: 2px solid var(--text);
+        outline-offset: 2px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+
+      .card {
+        width: 100%;
+        padding: 14px 16px 16px;
+        background: var(--night);
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+      }
+      .head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding-bottom: 12px;
+        margin-bottom: 12px;
+        border-bottom: 1px solid var(--line);
+        font-size: 15px;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+      }
+      .head svg {
+        width: 26px;
+        height: 26px;
+        flex: none;
+      }
+
+      .empty {
+        margin: 4px 2px 16px;
+        color: var(--muted);
+      }
+
+      .block {
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+      }
+      .block-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .block h2 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .idle {
+        margin: 6px 0 0;
+        color: var(--muted);
+      }
+
+      .live {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        background: var(--fuchsia);
+        color: var(--night);
+        font-weight: 700;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        line-height: 1.2;
+      }
+      .live::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--night);
+      }
+      .live.connecting {
+        background: #34365a;
+        color: var(--text);
+        letter-spacing: 0;
+      }
+      .live.connecting::before {
+        background: var(--fuchsia);
+      }
+
+      .headline {
+        margin: 8px 0 6px;
+        font-size: 26px;
+        font-weight: 650;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+      }
+      .rows {
+        margin: 0;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 4px 12px;
+      }
+      .rows dt {
+        color: var(--muted);
+      }
+      .rows dd {
+        margin: 0;
+        text-align: right;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        unicode-bidi: plaintext;
+      }
+
+      .claim-title {
+        margin: 8px 0;
+        font-size: 16px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .progress {
+        height: 8px;
+        background: rgba(255, 255, 255, 0.07);
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      .progress > span {
+        display: block;
+        height: 100%;
+        width: 0;
+        background: linear-gradient(90deg, #fc660e, #ffc34b 70%, #f3fd40);
+        border-radius: 4px;
+        box-shadow: 0 0 14px rgba(255, 195, 75, 0.7);
+      }
+      .detail {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .failed {
+        margin: 4px 0 0;
+        color: var(--red-text);
+        font-size: 13px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .btn {
+        flex: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 38px;
+        padding: 0 16px;
+        border: 1px solid transparent;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 14px;
+        line-height: 1;
+        cursor: pointer;
+        white-space: nowrap;
+        transition:
+          transform 0.12s ease,
+          background-color 0.2s ease;
+      }
+      .btn:active {
+        transform: scale(0.97);
+      }
+      .btn-primary {
+        background: var(--blurple);
+        color: #fff;
+        box-shadow: 0 10px 30px -10px rgba(88, 101, 242, 0.8);
+      }
+      .btn-primary:hover {
+        background: #4752c4;
+      }
+      .btn-quiet {
+        background: transparent;
+        color: var(--text);
+        border-color: var(--line-strong);
+      }
+      .btn-quiet:hover {
+        background: rgba(255, 255, 255, 0.06);
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card" id="card">
+      <header class="head">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <defs>
+            <linearGradient id="br-gold" x1="0.15" y1="0" x2="0.85" y2="1">
+              <stop offset="0" stop-color="#fff3c4" />
+              <stop offset="0.35" stop-color="#ffd35a" />
+              <stop offset="0.7" stop-color="#f0a52a" />
+              <stop offset="1" stop-color="#b96d12" />
+            </linearGradient>
+            <radialGradient id="br-face" cx="0.4" cy="0.3" r="0.9">
+              <stop offset="0" stop-color="#4a3fb8" />
+              <stop offset="1" stop-color="#17153a" />
+            </radialGradient>
+          </defs>
+          <circle cx="12" cy="12" r="8.2" fill="url(#br-face)" />
+          <circle cx="12" cy="12" r="9.3" fill="none" stroke="url(#br-gold)" stroke-width="2.6" />
+          <g
+            fill="none"
+            stroke="url(#br-gold)"
+            stroke-width="2.1"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <polyline points="8.3,11.4 12,7.7 15.7,11.4" />
+            <polyline points="8.3,15.5 12,11.8 15.7,15.5" />
+          </g>
+        </svg>
+        <span>Badge Maximizer</span>
+      </header>
+
+      <p class="empty" id="empty" hidden></p>
+
+      <section class="block" id="streamBlock" aria-labelledby="streamTitle" hidden>
+        <div class="block-head">
+          <h2 id="streamTitle">Stream</h2>
+          <span class="live" id="streamTag" hidden></span>
+        </div>
+        <div class="headline" id="streamHeadline" hidden></div>
+        <dl class="rows" id="streamRows" hidden></dl>
+        <p class="idle" id="streamIdle" hidden></p>
+      </section>
+
+      <section class="block" id="claimBlock" aria-labelledby="claimTitleHead" hidden>
+        <div class="block-head"><h2 id="claimTitleHead">Claim</h2></div>
+        <div id="claimRun" hidden>
+          <div class="claim-title" id="claimTitle"></div>
+          <div
+            class="progress"
+            id="claimProg"
+            role="progressbar"
+            aria-labelledby="claimTitle"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            aria-valuenow="0"
+          >
+            <span id="claimBar"></span>
+          </div>
+          <p class="detail" id="claimDetail"></p>
+          <p class="failed" id="claimFailed" hidden></p>
+        </div>
+        <p class="idle" id="claimIdle" hidden></p>
+      </section>
+
+      <div class="actions">
+        <button type="button" class="btn btn-primary" id="openApp">Open app</button>
+        <button type="button" class="btn btn-quiet" id="quit">Quit</button>
+      </div>
+    </main>
+    <script type="module" src="./src/tray.js"></script>
+  </body>
+</html>

@@ -1,6 +1,8 @@
+import { adoptSnapshot, runAfterBoot } from './adopt.js';
 import { registerFonts } from './fonts.js';
 import { createPicker } from './picker.js';
 import { buildScene } from './scene.js';
+import { sceneShouldRun } from './scene-gate.js';
 import {
   MAX_HOURS_PER_GAME, SECTIONS, accountRows, accountsSignature, altHint, badgeView, claimEtaMs, claimStartAction, claimSummary, clamp, clock,
   countOf, etaText, firstLetter, fmt, isCurrent, modeChangeAction, parseGamesInput, smooth, stamp, startResultAction,
@@ -30,7 +32,7 @@ const S = {
   tiers: { gametime: null, variety: null, stream: null },
   earned: {},
   games: { status: 'idle', count: 100, all: false, hours: 50, batch: 0, total: 0, failed: 0, game: '', startedAt: 0, summary: null, run: 0 },
-  stream: { status: 'off', step: 0, mode: 'video', liveMode: 'video', startedAt: 0, viewers: 0, tick: 0, restartAs: null, run: 0, counted: 0, lastChannel: '', accepted: false, endedHours: 0 },
+  stream: { status: 'off', step: 0, mode: 'video', liveMode: 'video', startedAt: 0, viewers: 0, tick: 0, restartAs: null, run: 0, counted: 0, lastChannel: '', accepted: false, endedHours: 0, target: null },
   alt: { account: 'out', name: '', autoWatch: true, status: 'idle' },
   accounts: { mainId: null, altId: null, accounts: [] },
   menuOpen: false,
@@ -42,18 +44,25 @@ let fx = null;
 
 const LOG_MAX_LINES = 300;
 const logLines = [];
-function log(msg, cls = '', problem = cls === 'pink', speak = true) {
+function showLogLine(time, msg, cls) {
   const ol = $('#log');
   const li = document.createElement('li');
   const t = document.createElement('time');
-  t.textContent = stamp(new Date());
+  t.textContent = time;
   const span = document.createElement('span');
   span.textContent = msg;
   if (cls) span.className = cls;
   li.append(t, span);
   ol.prepend(li);
-  logLines.unshift(`${t.textContent}  ${msg}`);
+  logLines.unshift(`${time}  ${msg}`);
   while (ol.children.length > LOG_MAX_LINES) { ol.lastChild.remove(); logLines.pop(); }
+}
+let lateLines = null;
+function log(msg, cls = '', problem = cls === 'pink', speak = true, keep = true) {
+  const time = stamp(new Date());
+  showLogLine(time, msg, cls);
+  if (lateLines) lateLines.push({ time, text: msg, cls });
+  if (keep) api.noteLog(msg, cls).catch((err) => console.warn('Could not keep the log line:', err));
   if (speak) announce(msg, problem);
 }
 const ANNOUNCE_KEEP = 3;
@@ -76,7 +85,7 @@ function applyLogin(res) {
   if (S.user?.id !== res.user.id) {
     S.tiers = { gametime: null, variety: null, stream: null };
     S.earned = {};
-    chosenServer = ''; S.stream.lastChannel = '';
+    if (S.stream.status === 'off') { chosenServer = ''; S.stream.lastChannel = ''; }
   }
   S.account = 'in';
   S.backendDown = '';
@@ -143,6 +152,7 @@ async function loadServers() {
     return;
   }
   serverPicker.setItems(servers, chosenServer || res.lastGuildId);
+  if (serverPicker.value) clearStreamError('#sServer', '#sServerErr');
   if (serverPicker.value !== chosenServer) S.stream.lastChannel = '';
   chosenServer = serverPicker.value;
   if (!S.stream.lastChannel && chosenServer === res.lastGuildId) S.stream.lastChannel = res.lastChannelId || '';
@@ -175,6 +185,7 @@ async function loadChannels() {
   }
   channelPicker.setItems(channels, S.stream.lastChannel);
   S.stream.lastChannel = channelPicker.value;
+  if (channelPicker.value) clearStreamError('#sChannel', '#sChannelErr');
 }
 function setPickerNote(text) {
   const note = $('#sPickerNote');
@@ -182,6 +193,7 @@ function setPickerNote(text) {
   note.hidden = !text;
 }
 function resetClaimPanel() {
+  if (S.games.status === 'done' || S.games.summary) api.dismissClaim().catch(failed);
   if (S.games.status === 'done') S.games.status = 'idle';
   S.games.summary = null;
 }
@@ -369,6 +381,7 @@ async function startClaim(attempt = 0) {
   g.status = 'idle';
   fx?.claimStop();
   log(errorText(res, 'The claim did not start.'), 'pink');
+  if (attempt > 0) api.stopClaim(run).catch(failed);
   render();
   focusIfLost('#gStart');
 }
@@ -419,11 +432,18 @@ function checkStreamInputs() {
 }
 const START_RETRIES = 10;
 const START_RETRY_MS = 400;
-async function startStream(attempt = 0) {
-  if (S.account !== 'in') { login(); return; }
+async function startStream(attempt = 0, restartAt = null) {
   const st = S.stream;
+  if (S.account !== 'in') {
+    if (attempt === 0 && !restartAt) { login(); return; }
+    log('The stream did not start, because no account is logged in.', 'pink');
+    api.stopStream(st.run).catch(failed);
+    if (st.status !== 'off') resetStream();
+    return;
+  }
   if (attempt === 0) {
-    if (!checkStreamInputs()) return;
+    if (!restartAt && !checkStreamInputs()) return;
+    st.target = restartAt || { serverId: serverPicker.value, channelId: channelPicker.value };
     st.status = 'connecting'; st.step = 0; st.run = nextRun(); st.liveMode = st.mode; st.accepted = false;
     log('Starting stream');
     fx?.streamConnecting();
@@ -431,7 +451,7 @@ async function startStream(attempt = 0) {
   }
   const run = st.run;
   const mode = st.liveMode;
-  const res = await api.startStream({ serverId: serverPicker.value, channelId: channelPicker.value, mode, run }).catch(failed);
+  const res = await api.startStream({ ...st.target, mode, run }).catch(failed);
   const action = startResultAction({ ok: res.ok, error: res.error, sameRun: st.run === run, status: st.status, attempt, maxAttempts: START_RETRIES });
   if (action === 'ignore') return;
   if (action === 'stop') { api.stopStream(run).catch(failed); return; }
@@ -448,8 +468,8 @@ async function startStream(attempt = 0) {
     setTimeout(() => { if (st.run === run && st.status === 'connecting') startStream(attempt + 1); }, START_RETRY_MS);
     return;
   }
-  if (action === 'giveUp') api.stopStream().catch(failed);
   log(errorText(res, 'The stream did not start.'), 'pink');
+  if (action === 'giveUp') api.stopStream().catch(failed);
   resetStream();
   focusIfLost('#sStart');
 }
@@ -503,15 +523,16 @@ function resetStream() {
 function switchMode(mode) {
   log(mode === 'video' ? 'Switching the stream to video, reconnecting' : 'Switching the stream to silent keepalive, reconnecting', 'pink', false);
   S.stream.restartAs = mode;
-  api.stopStream(S.stream.run).catch(failed);
+  api.stopStream(S.stream.run, true).catch(failed);
 }
 function onStreamEnded(d) {
   const st = S.stream;
   st.endedHours += Number(d && d.hours) || 0;
   if (!isCurrent(d, st.run)) { refreshBadges(); return; }
   if (st.restartAs !== null) {
+    const target = st.target;
     resetStream();
-    startStream();
+    startStream(0, target);
     refreshBadges();
     return;
   }
@@ -879,26 +900,33 @@ $$('input[name="mode"]').forEach((r) => r.addEventListener('change', () => {
   else if (action === 'switch') switchMode(r.value);
   render();
 }));
-api.onLog((d) => {
+function onLogEvent(d) {
   if (!d || !d.text) return;
   const problem = d.type === 'error' || d.type === 'warning';
   const isError = d.type === 'error';
-  log(d.text, problem ? 'pink' : '', isError, isError);
-});
-api.onClaimProgress(onClaimProgress);
-api.onClaimDone(onClaimDone);
-api.onStreamStep(onStreamStep);
-api.onStreamLive(goLive);
-api.onStreamEnded(onStreamEnded);
-api.onViewers((d) => {
+  log(d.text, problem ? 'pink' : '', isError, isError, false);
+}
+function onViewers(d) {
   if (S.stream.status !== 'live' || !isCurrent(d, S.stream.run)) return;
   S.stream.viewers = d.count || 0;
   S.stream.counted = Number(d.counted) || 0;
   renderStream();
   renderBadges();
-});
-api.onAltStatus(onAltStatus);
-api.onBackendRestart((d) => {
+}
+function subscribeBackend() {
+  api.onLog(onLogEvent);
+  api.onClaimProgress(onClaimProgress);
+  api.onClaimDone(onClaimDone);
+  api.onStreamStep(onStreamStep);
+  api.onStreamLive(goLive);
+  api.onStreamEnded(onStreamEnded);
+  api.onViewers(onViewers);
+  api.onAltStatus(onAltStatus);
+  api.onBackendRestart(onBackendRestart);
+  api.onHideWaiting(() => log('The app goes to the tray once the stream or claim has started.'));
+  api.onStreamAccepted((d) => { if (S.stream.status !== 'off' && isCurrent(d, S.stream.run)) S.stream.accepted = true; });
+}
+function onBackendRestart(d) {
   if (S.games.status === 'running') { S.games.status = 'idle'; fx?.claimStop(); }
   if (S.stream.status !== 'off') resetStream();
   S.alt.account = 'out'; S.alt.name = ''; S.alt.status = 'idle';
@@ -921,7 +949,7 @@ api.onBackendRestart((d) => {
   log('The part of the app that talks to Discord stopped. Starting it again.', 'pink');
   render();
   restoreLogin();
-});
+}
 
 const secEls = SECTIONS.map((id) => document.getElementById(id));
 const mainEl = document.querySelector('main');
@@ -990,7 +1018,7 @@ function goTo(id, instant = false, trigger = null) {
   const from = pageY, to = layout.secTops[idx];
   const sections = Math.abs(scrollToF(to) - scrollToF(from));
   setActiveSection(idx);
-  if (instant || Math.abs(to - from) < 1) {
+  if (instant || !running || Math.abs(to - from) < 1) {
     navTween = null;
     setPageY(to);
     showOnlyActive(true);
@@ -999,6 +1027,14 @@ function goTo(id, instant = false, trigger = null) {
   }
   showOnlyActive(false);
   navTween = { from, to, t: 0, dur: NAV_BASE_S + NAV_PER_SECTION_S * Math.max(0, sections - 1), idx, trigger };
+}
+function finishWalk() {
+  const n = navTween;
+  if (!n) return;
+  navTween = null;
+  setPageY(layout.secTops[n.idx]);
+  showOnlyActive(true);
+  focusHeading(n.idx, n.trigger);
 }
 function stepNav(dt) {
   if (!navTween) return;
@@ -1074,7 +1110,52 @@ try {
   log('The 3D view is off on this PC. Everything else still works.', 'pink');
 }
 render();
-restoreLogin();
+
+async function bootSession() {
+  lateLines = [];
+  const snapshot = await api.sessionSnapshot().catch((err) => {
+    console.warn('No session snapshot:', err);
+    return null;
+  });
+  const late = lateLines;
+  lateLines = null;
+  adopt(snapshot);
+  if (snapshot) for (const line of late) showLogLine(line.time, line.text, line.cls);
+  subscribeBackend();
+  restoreLogin();
+}
+function adopt(snapshot) {
+  const a = adoptSnapshot(snapshot, { nowWall: Date.now(), nowPerf: performance.now(), batchSize: S.batchSize });
+  lastRun = Math.max(lastRun, runAfterBoot(a, Date.now()));
+  if (!a) return;
+  S.alt.autoWatch = a.autoWatch;
+  $('#log').replaceChildren();
+  logLines.length = 0;
+  for (const line of [...a.log].reverse()) showLogLine(line.time, line.text, line.cls);
+  if (a.claim) {
+    Object.assign(S.games, a.claim);
+    $('#gCount').value = String(a.claim.count);
+    $('#gHours').value = String(a.claim.hours);
+  }
+  if (a.stream) adoptStream(a.stream, a.target, a.altStatus);
+  fx?.fromState();
+  render();
+}
+function adoptStream(stream, target, altStatus) {
+  const st = S.stream;
+  Object.assign(st, stream);
+  st.target = target;
+  S.alt.status = altStatus;
+  chosenServer = target.serverId;
+  st.lastChannel = target.channelId;
+  const radio = $(`input[name="mode"][value="${st.mode}"]`);
+  if (radio) radio.checked = true;
+  if (st.status !== 'live') return;
+  clearInterval(st.tick);
+  st.tick = setInterval(liveTick, 1000);
+  liveTick();
+}
+bootSession();
 
 const BOOT_SETTLE_MS = 350;
 const fontsReady = Promise.all([
@@ -1093,9 +1174,13 @@ fontsReady.then(() => new Promise((r) => requestAnimationFrame(() => requestAnim
   .then(() => setTimeout(hideBoot, BOOT_SETTLE_MS));
 
 let resizePending = false;
-addEventListener('resize', () => { resizePending = true; });
-new ResizeObserver(() => { resizePending = true; }).observe(mainEl);
-addEventListener('load', () => { resizePending = true; });
+function requestResize() {
+  resizePending = true;
+  if (!running && !document.hidden) drawOnce();
+}
+addEventListener('resize', requestResize);
+new ResizeObserver(requestResize).observe(mainEl);
+addEventListener('load', requestResize);
 function applyResize() {
   resizePending = false;
   measure();
@@ -1115,6 +1200,9 @@ function loop(now) {
   rafId = requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000 || 0.016);
   last = now;
+  tick(dt);
+}
+function tick(dt) {
   if (resizePending) applyResize();
   stepNav(dt);
   updateScrollUI(dt);
@@ -1144,8 +1232,27 @@ function stopLoop() {
   running = false;
   cancelAnimationFrame(rafId);
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { stopLoop(); $('#streamVideo').pause(); }
-  else { startLoop(); fx?.sync(); }
-});
-startLoop();
+let stillPending = false;
+function drawOnce() {
+  if (stillPending) return;
+  stillPending = true;
+  requestAnimationFrame(() => {
+    stillPending = false;
+    if (running) return;
+    tick(0.016);
+    $('#streamVideo').pause();
+  });
+}
+function updateLoop() {
+  if (sceneShouldRun({ hidden: document.hidden, focused: document.hasFocus() })) {
+    if (!running) { startLoop(); fx?.sync(); }
+    return;
+  }
+  if (running) { stopLoop(); finishWalk(); }
+  $('#streamVideo').pause();
+  if (!document.hidden) drawOnce();
+}
+document.addEventListener('visibilitychange', updateLoop);
+addEventListener('blur', updateLoop);
+addEventListener('focus', updateLoop);
+updateLoop();

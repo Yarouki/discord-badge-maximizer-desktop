@@ -23,8 +23,12 @@ export function fontSource(url) {
   return `url("${quoted}") format('woff2')`
 }
 
-export function registerFonts() {
-  for (const [family, url, descriptors] of FACES) {
+export function facesFor(families = ['Anybody', 'Onest']) {
+  return FACES.filter(([family]) => families.includes(family))
+}
+
+export function registerFonts(families) {
+  for (const [family, url, descriptors] of facesFor(families)) {
     document.fonts.add(new FontFace(family, fontSource(url), { display: 'swap', ...descriptors }))
   }
 }

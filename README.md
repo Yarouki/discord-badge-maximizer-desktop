@@ -10,7 +10,7 @@ A Windows app for Discord's Game Time, Game Variety and Streaming profile badges
 
 ## Download
 
-Get `badge-maximizer-0.1.1-setup.exe` from the [latest release](https://github.com/Yarouki/discord-badge-maximizer-desktop/releases/latest). It runs on Windows 10 and 11 (64-bit), needs no admin rights, and brings everything with it. You don't have to install Python or FFmpeg.
+Get `badge-maximizer-0.2.0-setup.exe` from the [latest release](https://github.com/Yarouki/discord-badge-maximizer-desktop/releases/latest). It runs on Windows 10 and 11 (64-bit), needs no admin rights, and brings everything with it. You don't have to install Python or FFmpeg.
 
 ![The installer's first page](docs/screenshots/installer.png)
 
@@ -36,6 +36,12 @@ Discord only counts streaming hours while someone watches. A second account of y
 
 ![The alt account watching the stream](docs/screenshots/alt-viewer.png)
 
+### Tray
+
+Minimize the window and the app moves to the tray. The window closes completely, which frees its memory and its use of the graphics card, while the stream, the alt and a running claim carry on. A click on the tray icon shows the stream's state and the claim's progress. Open app brings the window back with the timer, the viewers and the log as they are. Closing the window with X quits the app and ends the stream.
+
+![The tray panel with a live stream and a claim](docs/screenshots/tray.png)
+
 ### Badges
 
 Shows the tier of each badge on your profile and what this app has added to it.
@@ -60,6 +66,8 @@ Every step the app and Discord took, newest first, with a button to copy it and 
 - If FFmpeg or the video is missing, the stream falls back to the silent keepalive and says so.
 - The activity log is also written to a file (rotated at 1 MB) at `%APPDATA%\Badge Maximizer\logs`.
 - Only one copy of the app runs at a time, and closing it stops the backend and FFmpeg with it.
+- The 3D scene stops drawing while the window isn't in front, so it doesn't use the graphics card behind a game.
+- Windows tells you when a stream ends by itself while the app is in the tray.
 - One installer holds the app, the compiled backend and FFmpeg. The uninstaller asks whether to delete your saved logins and totals.
 - The streaming script itself has fixes over the original. It no longer stalls on data that arrived together with the previous message, no longer reports a voice connection that sends nothing as connected, keeps its heartbeats going while a voice server is slow, and stops retrying a login session Discord has already rejected.
 
